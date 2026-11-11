@@ -49,26 +49,34 @@ if [ ! -f "$CERT" ] || [ ! -f "$KEY" ]; then
 fi
 chmod 644 "$CERT"
 chmod 600 "$KEY"
-# Mosquitto corre como usuario mosquitto, necesita leer la key
-usermod -a -G ssl-cert mosquitto 2>/dev/null || true
-chgrp ssl-cert /etc/letsencrypt/live/"$DOMAIN"/privkey.pem 2>/dev/null || true
-chmod 640 "$KEY"
+# Copia el cert a Mosquitto, porque /etc/letsencrypt/live es solo para root
+# y Mosquitto corre como usuario mosquitto y no lo puede leer.
+mkdir -p /etc/mosquitto/certs
+cp "$CERT" /etc/mosquitto/certs/fullchain.pem
+cp "$KEY" /etc/mosquitto/certs/privkey.pem
+chown -R mosquitto:mosquitto /etc/mosquitto/certs
+chmod 644 /etc/mosquitto/certs/fullchain.pem
+chmod 600 /etc/mosquitto/certs/privkey.pem
+CERT="/etc/mosquitto/certs/fullchain.pem"
+KEY="/etc/mosquitto/certs/privkey.pem"
 
 # Config Mosquitto: 8883 MQTT-TLS + 443 WSS, mismo certificado
+# password_file y allow_anonymous van UNA sola vez, arriba, son globales.
+# Si se repiten por cada listener Mosquitto falla con
+# "Duplicate password_file value in configuration".
 cat > /etc/mosquitto/conf.d/mqtt-tls.conf <<EOF
+allow_anonymous false
+password_file /etc/mosquitto/passwd
+
 # MQTT con TLS en 8883
 listener 8883
 protocol mqtt
-allow_anonymous false
-password_file /etc/mosquitto/passwd
 certfile $CERT
 keyfile $KEY
 
 # MQTT sobre WebSocket seguro en 443
 listener 443
 protocol websockets
-allow_anonymous false
-password_file /etc/mosquitto/passwd
 certfile $CERT
 keyfile $KEY
 EOF
@@ -86,6 +94,15 @@ ufw allow 8883/tcp 2>/dev/null || true
 mkdir -p /etc/letsencrypt/renewal-hooks/deploy
 cat > /etc/letsencrypt/renewal-hooks/deploy/mosquitto.sh <<'HOOK'
 #!/bin/bash
+DOMAIN="$(cat /root/mqtt_domain 2>/dev/null || echo "")"
+if [ -n "$DOMAIN" ] && [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+    mkdir -p /etc/mosquitto/certs
+    cp "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" /etc/mosquitto/certs/fullchain.pem
+    cp "/etc/letsencrypt/live/$DOMAIN/privkey.pem" /etc/mosquitto/certs/privkey.pem
+    chown -R mosquitto:mosquitto /etc/mosquitto/certs
+    chmod 644 /etc/mosquitto/certs/fullchain.pem
+    chmod 600 /etc/mosquitto/certs/privkey.pem
+fi
 systemctl restart mosquitto 2>/dev/null || true
 HOOK
 chmod +x /etc/letsencrypt/renewal-hooks/deploy/mosquitto.sh
